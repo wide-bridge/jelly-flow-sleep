@@ -1,0 +1,38 @@
+name: Deploy Jelly flow to GitHub Pages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check application files
+        run: |
+          test -s dist/index.html
+          test -s dist/audio/release-into-stillness.mp3
+          test -s dist/audio/walk-slowly.mp3
+          node --check dist/app.js
+          node --check dist/tracks.js
+          node --check dist/routineContent.js
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
