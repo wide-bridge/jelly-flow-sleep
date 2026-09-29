@@ -1,0 +1,60 @@
+import { createRequire } from 'node:module';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import assert from 'node:assert/strict';
+import { recommendRoutine, moods } from '../dist/routineContent.js';
+const require=createRequire(import.meta.url);
+const {chromium}=require(process.env.JELLY_PLAYWRIGHT_PATH || 'playwright');
+const base='http://127.0.0.1:8032';
+mkdirSync('test-results',{recursive:true});
+const results=[];
+const pass=(name)=>{results.push(name);console.log('PASS',name);};
+for(const mood of Object.keys(moods))for(const minutes of [5,10,15]){
+ const r=recommendRoutine({mood,minutes});assert.equal(r.steps.reduce((n,s)=>n+s.durationSec,0),minutes*60);assert.deepEqual(r,recommendRoutine({mood,minutes}));
+}
+assert.throws(()=>recommendRoutine({mood:'invalid',minutes:10}));pass('12 deterministic routines and invalid input');
+const browser=await chromium.launch({channel:'msedge',headless:true});
+const ctx=await browser.newContext({viewport:{width:390,height:844},locale:'ko-KR',timezoneId:'Asia/Seoul'});
+const page=await ctx.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
+await page.goto(base);await page.waitForFunction(()=>Number.isFinite(document.querySelector('audio').duration));
+assert.match(await page.title(),/Jelly flow/);assert.equal(await page.locator('audio').evaluate(a=>a.paused),true);
+assert.ok(Math.abs((await page.locator('audio').evaluate(a=>a.duration))-191.64)<2);pass('MP3 metadata and no autoplay');
+await page.screenshot({path:'test-results/home-390.png',fullPage:true});
+await page.locator('#quick-start').click();await page.waitForFunction(()=>!document.querySelector('audio').paused);
+assert.equal(await page.locator('#routine-dialog').evaluate(d=>d.open),true);
+const initial=await page.evaluate(()=>JSON.parse(localStorage.getItem('sleepApp:v1')).active);
+await page.locator('#skip-stage').click();assert.match(await page.locator('#stage-name').textContent(),/몸의 힘/);
+assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('sleepApp:v1')).active.endsAtMs),initial.endsAtMs);
+await page.screenshot({path:'test-results/routine-390.png'});
+await page.locator('#routine-dialog [data-close]').click();await page.locator('.bottom-nav [data-tab=sounds]').click();
+assert.equal(await page.locator('audio').evaluate(a=>a.paused),false);assert.equal(await page.locator('audio').count(),1);pass('Routine starts real audio; skipping preserves deadline; tabs retain single audio');
+await page.locator('.music-select').click();await page.locator('#play-toggle').click();assert.equal(await page.locator('audio').evaluate(a=>a.paused),true);
+await page.locator('#favorite').click();assert.equal(await page.locator('#favorite').getAttribute('aria-pressed'),'true');
+await page.locator('#volume').fill('0.2');assert.equal(await page.locator('audio').evaluate(a=>a.volume),.2);
+await page.locator('#play-mode').selectOption('repeat');
+await page.screenshot({path:'test-results/player-390.png',fullPage:true});
+await page.reload();assert.equal(await page.locator('audio').evaluate(a=>a.paused),true);assert.equal(await page.locator('#play-mode').inputValue(),'repeat');
+assert.equal(await page.locator('#favorite').getAttribute('aria-pressed'),'true');pass('Pause, volume, favorites, repeat settings survive reload without autoplay');
+await page.locator('#resume-routine').click();await page.locator('#end-routine').click();await page.locator('#confirm-ok').click();
+await page.locator('#complete-journal').click();await page.locator('#latest-note').click();
+await page.locator('[name=morningFeel]').selectOption('4');await page.locator('[name=note]').fill('<img src=x onerror=alert(1)> 편안했어요');await page.locator('#note-form button[type=submit]').click();
+assert.equal(await page.locator('#session-list img').count(),0);assert.match(await page.locator('.note-content').textContent(),/편안했어요/);
+await page.reload();await page.locator('.bottom-nav [data-tab=journal]').click();assert.match(await page.locator('.note-content').textContent(),/편안했어요/);pass('Interrupted session and safe morning note persistence');
+await page.screenshot({path:'test-results/journal-390.png',fullPage:true});
+await page.locator('.edit-note').click();await page.locator('[name=note]').fill('수정한 아침 기록');await page.locator('#note-form button[type=submit]').click();assert.match(await page.locator('.note-content').textContent(),/수정한 아침 기록/);
+await page.locator('.settings summary').click();const downloadPromise=page.waitForEvent('download');await page.locator('#export-data').click();const dl=await downloadPromise;await dl.saveAs('test-results/export.json');pass('Morning edit and JSON export');
+await page.locator('#delete-all').click();await page.locator('#confirm-ok').click();assert.equal(await page.locator('.session-card').count(),0);
+await page.locator('#import-file').setInputFiles('test-results/export.json');await page.locator('#confirm-ok').click();assert.equal(await page.locator('.session-card').count(),1);pass('Confirmed deletion and validated import round-trip');
+await page.locator('#import-file').setInputFiles({name:'bad.json',mimeType:'application/json',buffer:Buffer.from('{"schemaVersion":99}')});assert.equal(await page.locator('.session-card').count(),1);pass('Invalid import preserves existing records');
+for(const width of [320,390,1440]){
+ await page.setViewportSize({width,height:900});
+ for(const tab of ['tonight','sounds','journal']){await page.locator(`.bottom-nav [data-tab=${tab}]`).click();assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,`${width} ${tab} overflow`);}
+ await page.locator('.bottom-nav [data-tab=tonight]').click();await page.screenshot({path:`test-results/home-${width}.png`,fullPage:true});
+}pass('320, 390, 1440 layouts have no horizontal overflow');
+// Use a virtual clock to check wall-clock deadlines without waiting real minutes.
+await page.clock.install();await page.locator('#home-track').click();await page.locator('#music-timer').selectOption('5');await page.locator('#play-toggle').click();
+await page.clock.fastForward(301000);await page.waitForFunction(()=>document.querySelector('audio').paused);assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('sleepApp:v1')).playback.endsAtMs),null);pass('Standalone timer stops repeated audio');
+await page.locator('#player-dialog [data-close]').click();await page.locator('[data-minutes="5"]').click();await page.locator('#routine-preview').click();await page.locator('#start-quiet').click();
+await page.clock.fastForward(301000);await page.waitForFunction(()=>document.querySelector('#routine-body').textContent.includes('오늘의 쉼을 마쳤'));assert.equal(await page.locator('audio').evaluate(a=>a.paused),true);pass('Silent routine finishes and saves at deadline');
+assert.deepEqual(errors,[]);pass('No uncaught browser errors');
+writeFileSync('test-results/results.json',JSON.stringify(results,null,2));
+await browser.close();

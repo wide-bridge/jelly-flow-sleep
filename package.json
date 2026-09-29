@@ -1,0 +1,8 @@
+{
+  "name": "jelly-flow",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Jelly flow · 젤리 플로우 — 모바일 우선 숙면 루틴 웹앱",
+  "scripts": { "start": "python server.py", "check": "node --check dist/app.js && node --check dist/tracks.js && node --check dist/routineContent.js" }
+}
